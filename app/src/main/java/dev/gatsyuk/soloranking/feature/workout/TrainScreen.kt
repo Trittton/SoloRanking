@@ -38,6 +38,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.gatsyuk.soloranking.core.data.WorkoutRepository
+import dev.gatsyuk.soloranking.core.database.entity.WorkoutEntity
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import dev.gatsyuk.soloranking.core.database.dao.ExerciseDao
 import dev.gatsyuk.soloranking.core.database.dao.RoutineDao
 import dev.gatsyuk.soloranking.core.database.dao.RoutineWithExercises
@@ -71,13 +74,39 @@ class TrainViewModel @Inject constructor(
         .map { list -> list.associate { it.exercise.id to it.exercise.name } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
-    fun startEmpty(onStarted: (Long) -> Unit) = viewModelScope.launch {
-        onStarted(repository.startEmptyWorkout())
+    /** START pressed while a live session with logged sets exists — its fate is the user's call. */
+    data class PendingStart(val live: WorkoutEntity, val routineId: Long?)
+
+    private val _pendingStart = MutableStateFlow<PendingStart?>(null)
+    val pendingStart: StateFlow<PendingStart?> = _pendingStart
+
+    /** [routineId] null = empty workout. Prompts first if a non-empty live session exists. */
+    fun requestStart(routineId: Long?, onStarted: (Long) -> Unit) = viewModelScope.launch {
+        val live = repository.nonEmptyLiveWorkout()
+        if (live != null) {
+            _pendingStart.value = PendingStart(live, routineId)
+        } else {
+            onStarted(start(routineId))
+        }
     }
 
-    fun startFromRoutine(routineId: Long, onStarted: (Long) -> Unit) = viewModelScope.launch {
-        onStarted(repository.startFromRoutine(routineId))
+    fun resolvePendingStart(discardLive: Boolean, onStarted: (Long) -> Unit) = viewModelScope.launch {
+        val pending = _pendingStart.value ?: return@launch
+        _pendingStart.value = null
+        if (discardLive) {
+            repository.deleteWorkout(pending.live.id)
+        } else {
+            repository.finishWorkout(pending.live.id)
+        }
+        onStarted(start(pending.routineId))
     }
+
+    fun cancelPendingStart() {
+        _pendingStart.value = null
+    }
+
+    private suspend fun start(routineId: Long?): Long =
+        if (routineId == null) repository.startEmptyWorkout() else repository.startFromRoutine(routineId)
 }
 
 @Composable
@@ -90,6 +119,7 @@ fun TrainScreen(
     val history by viewModel.history.collectAsStateWithLifecycle()
     val routines by viewModel.routines.collectAsStateWithLifecycle()
     val exerciseNames by viewModel.exerciseNames.collectAsStateWithLifecycle()
+    val pendingStart by viewModel.pendingStart.collectAsStateWithLifecycle()
 
     var tab by rememberSaveable { mutableStateOf(0) } // 0 = History, 1 = Routines
     var showNewWorkoutDialog by remember { mutableStateOf(false) }
@@ -120,7 +150,7 @@ fun TrainScreen(
                 RoutineList(
                     routines = routines,
                     exerciseNames = exerciseNames,
-                    onStart = { id -> viewModel.startFromRoutine(id) { onOpenWorkout(it) } },
+                    onStart = { id -> viewModel.requestStart(id) { onOpenWorkout(it) } },
                     onEdit = onEditRoutine,
                 )
             }
@@ -133,11 +163,34 @@ fun TrainScreen(
             onDismiss = { showNewWorkoutDialog = false },
             onStartEmpty = {
                 showNewWorkoutDialog = false
-                viewModel.startEmpty { onOpenWorkout(it) }
+                viewModel.requestStart(null) { onOpenWorkout(it) }
             },
             onStartRoutine = { id ->
                 showNewWorkoutDialog = false
-                viewModel.startFromRoutine(id) { onOpenWorkout(it) }
+                viewModel.requestStart(id) { onOpenWorkout(it) }
+            },
+        )
+    }
+
+    pendingStart?.let { pending ->
+        AlertDialog(
+            onDismissRequest = viewModel::cancelPendingStart,
+            title = { Text("Workout in progress") },
+            text = {
+                Text(
+                    "“${pending.live.name}” is still running and has logged sets. " +
+                        "What should happen to it?",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.resolvePendingStart(discardLive = false) { onOpenWorkout(it) }
+                }) { Text("Finish it & start new") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.resolvePendingStart(discardLive = true) { onOpenWorkout(it) }
+                }) { Text("Discard it", color = MaterialTheme.colorScheme.error) }
             },
         )
     }

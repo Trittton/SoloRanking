@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -30,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.gatsyuk.soloranking.core.database.dao.ExerciseWithMuscles
@@ -70,37 +73,51 @@ fun ExerciseFormDialog(
     onSave: (ExerciseFormResult) -> Unit,
 ) {
     val isEdit = existing != null
-    var name by rememberSaveable { mutableStateOf(existing?.exercise?.name ?: initialName) }
-    var groupId by rememberSaveable { mutableStateOf(existing?.exercise?.muscleGroupId ?: -1L) }
-    var typeName by rememberSaveable {
-        mutableStateOf((existing?.exercise?.exerciseType ?: ExerciseType.STRENGTH_WEIGHT_REPS).name)
-    }
-    var unilateral by rememberSaveable { mutableStateOf(existing?.exercise?.isUnilateral ?: false) }
-    var warmups by rememberSaveable {
-        mutableStateOf((existing?.exercise?.defaultWarmupSets ?: 0).toString())
-    }
-    var primary by rememberSaveable(stateSaver = muscleSetSaver) {
-        mutableStateOf(
-            existing?.muscles?.filter { it.role == MuscleRole.PRIMARY }?.map { it.muscle }?.toSet()
-                ?: emptySet(),
+    // What the form opened with — the reference point for the discard guard.
+    val initial = remember {
+        ExerciseFormResult(
+            name = existing?.exercise?.name ?: initialName,
+            muscleGroupId = existing?.exercise?.muscleGroupId ?: -1L,
+            type = existing?.exercise?.exerciseType ?: ExerciseType.STRENGTH_WEIGHT_REPS,
+            unilateral = existing?.exercise?.isUnilateral ?: false,
+            defaultWarmupSets = existing?.exercise?.defaultWarmupSets ?: 0,
+            primary = existing?.muscles?.filter { it.role == MuscleRole.PRIMARY }
+                ?.map { it.muscle }?.toSet() ?: emptySet(),
+            secondary = existing?.muscles?.filter { it.role == MuscleRole.SECONDARY }
+                ?.map { it.muscle }?.toSet() ?: emptySet(),
         )
     }
+    var name by rememberSaveable { mutableStateOf(initial.name) }
+    var groupId by rememberSaveable { mutableStateOf(initial.muscleGroupId) }
+    var typeName by rememberSaveable { mutableStateOf(initial.type.name) }
+    var unilateral by rememberSaveable { mutableStateOf(initial.unilateral) }
+    var warmups by rememberSaveable { mutableStateOf(initial.defaultWarmupSets.toString()) }
+    var primary by rememberSaveable(stateSaver = muscleSetSaver) { mutableStateOf(initial.primary) }
     var secondary by rememberSaveable(stateSaver = muscleSetSaver) {
-        mutableStateOf(
-            existing?.muscles?.filter { it.role == MuscleRole.SECONDARY }?.map { it.muscle }?.toSet()
-                ?: emptySet(),
-        )
+        mutableStateOf(initial.secondary)
     }
     var groupMenu by remember { mutableStateOf(false) }
     var typeMenu by remember { mutableStateOf(false) }
+    var confirmDiscard by rememberSaveable { mutableStateOf(false) }
 
     val type = ExerciseType.valueOf(typeName)
     val group = muscleGroups.firstOrNull { it.id == groupId }
     val warmupCount = warmups.toIntOrNull()
     val valid = name.isNotBlank() && group != null && warmupCount != null && warmupCount >= 0
 
+    val dirty = name != initial.name || groupId != initial.muscleGroupId ||
+        typeName != initial.type.name || unilateral != initial.unilateral ||
+        warmups != initial.defaultWarmupSets.toString() ||
+        primary != initial.primary || secondary != initial.secondary
+
+    val keyboard = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.isImeVisible
+    // An edited form never silently discards (user feedback).
+    val guardedDismiss = { if (dirty) confirmDiscard = true else onDismiss() }
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        // Back gesture / outside tap: close the keyboard FIRST, then guard.
+        onDismissRequest = { if (imeVisible) keyboard?.hide() else guardedDismiss() },
         title = { Text(if (isEdit) "Edit exercise" else "New exercise") },
         text = {
             Column(
@@ -208,8 +225,24 @@ fun ExerciseFormDialog(
                 },
             ) { Text(if (isEdit) "Save" else "Create") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = guardedDismiss) { Text("Cancel") } },
     )
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard changes?") },
+            text = { Text("You have unsaved changes in this exercise.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDiscard = false; onDismiss() }) {
+                    Text("Discard", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)

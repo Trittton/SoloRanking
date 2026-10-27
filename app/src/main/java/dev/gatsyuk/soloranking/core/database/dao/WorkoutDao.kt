@@ -95,6 +95,27 @@ interface WorkoutDao {
     @Query("SELECT * FROM workout WHERE end_time IS NULL ORDER BY id DESC LIMIT 1")
     fun observeInProgressWorkout(): Flow<WorkoutEntity?>
 
+    /** ALL live sessions, newest first — abandoned-session sweep + start guard. */
+    @Query("SELECT * FROM workout WHERE end_time IS NULL ORDER BY id DESC")
+    suspend fun getInProgressWorkouts(): List<WorkoutEntity>
+
+    /**
+     * Sets that carry real data — the inverse of the [deleteEmptySets]
+     * predicate. Zero means the workout was never actually performed.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM set_entry s
+        JOIN workout_exercise we ON s.workout_exercise_id = we.id
+        JOIN exercise e ON we.exercise_id = e.id
+        WHERE we.workout_id = :workoutId
+          AND (s.weight_kg IS NOT NULL OR s.reps IS NOT NULL OR s.time_seconds IS NOT NULL
+               OR s.distance_meters IS NOT NULL OR s.kcal IS NOT NULL
+               OR (e.exercise_type = 'OTHER_NOTES' AND s.notes IS NOT NULL))
+        """,
+    )
+    suspend fun countFilledSets(workoutId: Long): Int
+
     @Query("SELECT COUNT(*) FROM workout")
     suspend fun countWorkouts(): Int
 

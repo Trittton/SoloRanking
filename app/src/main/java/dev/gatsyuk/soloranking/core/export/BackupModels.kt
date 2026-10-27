@@ -27,11 +27,29 @@ data class BackupSnapshot(
     val foodItems: List<FoodItemDto> = emptyList(),
     val diaryEntries: List<DiaryEntryDto> = emptyList(),
     val nutritionTargets: List<NutritionTargetDto> = emptyList(),
+    val preferences: PreferencesDto? = null, // v2; absent in v1 backups
 ) {
     companion object {
-        const val CURRENT_VERSION = 1
+        const val CURRENT_VERSION = 2
     }
 }
+
+/**
+ * Profile & settings (DataStore, not Room) — added in v2. Sex + bodyweight are
+ * rank-engine INPUTS, not derivable from history, so a restore without them
+ * left ranking dead until re-entered by hand. Strings mirror enum names;
+ * everything nullable so v1 files and partial blocks import unchanged.
+ * Auto-backup stays device-local on purpose (its WorkManager schedule
+ * shouldn't silently change on import).
+ */
+@Serializable
+data class PreferencesDto(
+    val sex: String? = null,
+    val bodyweightFallbackKg: Double? = null,
+    val weightUnit: String? = null,
+    val themeMode: String? = null,
+    val restTimerSeconds: Int? = null,
+)
 
 @Serializable
 data class MuscleGroupDto(val id: Long, val name: String, val displayOrder: Int)

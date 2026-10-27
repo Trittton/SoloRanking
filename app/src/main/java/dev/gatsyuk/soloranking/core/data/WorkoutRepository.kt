@@ -27,14 +27,16 @@ class WorkoutRepository @Inject constructor(
     private val exerciseDao: ExerciseDao,
 ) {
 
-    suspend fun startEmptyWorkout(name: String = "Workout"): Long =
-        workoutDao.insertWorkout(
+    suspend fun startEmptyWorkout(name: String = "Workout"): Long {
+        sweepAbandonedSessions()
+        return workoutDao.insertWorkout(
             WorkoutEntity(
                 name = name,
                 date = LocalDate.now(),
                 startTimeEpochMillis = System.currentTimeMillis(),
             ),
         )
+    }
 
     /**
      * START on a routine: instantiate a live workout with its exercises AND
@@ -45,6 +47,7 @@ class WorkoutRepository @Inject constructor(
         val routine = requireNotNull(routineDao.getRoutineWithExercises(routineId)) {
             "Routine $routineId not found"
         }
+        sweepAbandonedSessions()
         // Notes inherit from the LAST performance of this routine — a snapshot
         // at creation time, so later edits to old records never leak forward.
         val lastRun = workoutDao.getLastCompletedWorkoutOfRoutine(routineId)
@@ -72,6 +75,8 @@ class WorkoutRepository @Inject constructor(
 
     /** "Repeat Workout": a fresh live session cloning exercises, set values and notes. */
     suspend fun repeatWorkout(sourceWorkoutId: Long): Long {
+        // Spare the source: it may itself be the live session being repeated.
+        sweepAbandonedSessions(exceptId = sourceWorkoutId)
         val source = requireNotNull(workoutDao.getWorkoutWithContent(sourceWorkoutId)) {
             "Workout $sourceWorkoutId not found"
         }
@@ -94,6 +99,8 @@ class WorkoutRepository @Inject constructor(
                 )
             }
         }
+        // If the source was itself live, the clone supersedes it — resolve it now.
+        source.workout.takeIf { it.endTimeEpochMillis == null }?.let { resolveAbandoned(it) }
         return newId
     }
 
@@ -240,6 +247,35 @@ class WorkoutRepository @Inject constructor(
 
     suspend fun removeExercise(entry: WorkoutExerciseEntity) =
         workoutDao.deleteWorkoutExercise(entry)
+
+    /**
+     * Resolves abandoned live sessions (end_time NULL): never-performed ones
+     * (no filled sets) are deleted, ones with logged data are finished at
+     * "now" — day-old zombies get an implausible duration, which
+     * trackedDurationMillis already hides and excludes from stats. Runs before
+     * every workout start (the invariant: at most ONE live session), on app
+     * launch and after import with [keepLatestOpen] so the resume-bar session
+     * survives. [exceptId] spares one workout (Repeat's source).
+     */
+    suspend fun sweepAbandonedSessions(keepLatestOpen: Boolean = false, exceptId: Long? = null) {
+        workoutDao.getInProgressWorkouts() // newest first
+            .drop(if (keepLatestOpen) 1 else 0)
+            .filter { it.id != exceptId }
+            .forEach { resolveAbandoned(it) }
+    }
+
+    private suspend fun resolveAbandoned(workout: WorkoutEntity) {
+        if (workoutDao.countFilledSets(workout.id) == 0) {
+            workoutDao.deleteWorkoutById(workout.id)
+        } else {
+            workoutDao.deleteEmptySets(workout.id)
+            workoutDao.updateWorkout(workout.copy(endTimeEpochMillis = System.currentTimeMillis()))
+        }
+    }
+
+    /** Live session with logged sets — the start guard asks before touching it. */
+    suspend fun nonEmptyLiveWorkout(): WorkoutEntity? =
+        workoutDao.getInProgressWorkouts().firstOrNull { workoutDao.countFilledSets(it.id) > 0 }
 
     suspend fun finishWorkout(workoutId: Long) {
         val workout = workoutDao.getWorkout(workoutId) ?: return

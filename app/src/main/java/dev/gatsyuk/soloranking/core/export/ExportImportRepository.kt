@@ -1,7 +1,13 @@
 package dev.gatsyuk.soloranking.core.export
 
+import dev.gatsyuk.soloranking.core.data.WorkoutRepository
 import dev.gatsyuk.soloranking.core.database.dao.ExportDao
+import dev.gatsyuk.soloranking.core.datastore.UserPreferencesRepository
+import dev.gatsyuk.soloranking.core.model.Sex
+import dev.gatsyuk.soloranking.core.model.ThemeMode
+import dev.gatsyuk.soloranking.core.model.WeightUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -16,6 +22,8 @@ import javax.inject.Singleton
 @Singleton
 class ExportImportRepository @Inject constructor(
     private val exportDao: ExportDao,
+    private val workoutRepository: WorkoutRepository,
+    private val userPreferences: UserPreferencesRepository,
 ) {
 
     suspend fun buildSnapshot(): BackupSnapshot = withContext(Dispatchers.IO) {
@@ -32,6 +40,13 @@ class ExportImportRepository @Inject constructor(
             foodItems = exportDao.allFoodItems().map { it.toDto() },
             diaryEntries = exportDao.allDiaryEntries().map { it.toDto() },
             nutritionTargets = exportDao.allNutritionTargets().map { it.toDto() },
+            preferences = PreferencesDto(
+                sex = userPreferences.sex.first().takeIf { it != Sex.UNSET }?.name,
+                bodyweightFallbackKg = userPreferences.bodyweightFallbackKg.first(),
+                weightUnit = userPreferences.weightUnit.first().name,
+                themeMode = userPreferences.themeMode.first().name,
+                restTimerSeconds = userPreferences.restTimerSeconds.first(),
+            ),
         )
     }
 
@@ -51,7 +66,23 @@ class ExportImportRepository @Inject constructor(
             diaryEntries = snapshot.diaryEntries.map { it.toEntity() },
             nutritionTargets = snapshot.nutritionTargets.map { it.toEntity() },
         )
+        // Backups made mid-training carry unfinished sessions (sometimes many,
+        // accumulated before the start guard existed). Resolve all but the
+        // newest so the restored resume bar isn't a stack of zombies.
+        workoutRepository.sweepAbandonedSessions(keepLatestOpen = true)
+        // v2 preference block: apply what's present, skip what isn't. Unknown
+        // enum values (a future app's new option) are ignored, not fatal.
+        snapshot.preferences?.let { p ->
+            p.sex?.toEnumOrNull<Sex>()?.let { userPreferences.setSex(it) }
+            p.bodyweightFallbackKg?.let { userPreferences.setBodyweightFallbackKg(it) }
+            p.weightUnit?.toEnumOrNull<WeightUnit>()?.let { userPreferences.setWeightUnit(it) }
+            p.themeMode?.toEnumOrNull<ThemeMode>()?.let { userPreferences.setThemeMode(it) }
+            p.restTimerSeconds?.let { userPreferences.setRestTimerSeconds(it) }
+        }
     }
+
+    private inline fun <reified E : Enum<E>> String.toEnumOrNull(): E? =
+        runCatching { enumValueOf<E>(this) }.getOrNull()
 
     suspend fun importJson(text: String) = restore(BackupSerializer.fromJson(text))
 }

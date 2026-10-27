@@ -27,6 +27,13 @@ class BackupSerializerTest {
         ),
         diaryEntries = listOf(DiaryEntryDto(1, 20645, "BREAKFAST", 1, 0.8)),
         nutritionTargets = listOf(NutritionTargetDto(1, 20645, 2500, 150, 250, 80)),
+        preferences = PreferencesDto(
+            sex = "MALE",
+            bodyweightFallbackKg = 90.0,
+            weightUnit = "KG",
+            themeMode = "DARK",
+            restTimerSeconds = 150,
+        ),
     )
 
     @Test
@@ -39,11 +46,20 @@ class BackupSerializerTest {
     @Test
     fun `newer backup version is rejected`() {
         val future = BackupSerializer.toJson(sampleSnapshot())
-            .replace("\"version\": 1", "\"version\": 999")
+            .replace("\"version\": ${BackupSnapshot.CURRENT_VERSION}", "\"version\": 999")
         val ex = assertThrows(IllegalArgumentException::class.java) {
             BackupSerializer.fromJson(future)
         }
         assertTrue(ex.message!!.contains("newer than this app supports"))
+    }
+
+    @Test
+    fun `v1 backup without preferences block imports with null preferences`() {
+        val v1 = """{"version": 1, "exportedAtEpochMillis": 1783000000000}"""
+        val restored = BackupSerializer.fromJson(v1)
+        assertEquals(1, restored.version)
+        assertEquals(null, restored.preferences)
+        assertTrue(restored.workouts.isEmpty())
     }
 
     @Test

@@ -26,9 +26,15 @@ class SoloRankingApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var workoutDao: dev.gatsyuk.soloranking.core.database.dao.WorkoutDao
 
+    @Inject lateinit var workoutRepository: dev.gatsyuk.soloranking.core.data.WorkoutRepository
+
     override fun onCreate() {
         super.onCreate()
-        applicationScope.launch { seeder.seedIfEmpty() }
+        applicationScope.launch {
+            seeder.seedIfEmpty()
+            // Clean up zombie live sessions; the newest stays for the resume bar.
+            workoutRepository.sweepAbandonedSessions(keepLatestOpen = true)
+        }
         // Ongoing notification mirrors the in-progress workout (user feature).
         applicationScope.launch {
             workoutDao.observeInProgressWorkout().collect { live ->
